@@ -1,0 +1,299 @@
+"""
+main.py
+-------
+FastAPI application entry point.
+
+Endpoints
+---------
+GET  /                       Health check
+POST /api/suggest-tags       Create a post and return Groq tag suggestions
+POST /api/confirm-tags       Record a human correction for a suggestion
+GET  /api/metrics            Return agreement metrics across all corrections
+
+Session pattern
+---------------
+Uses database.py's get_session_local() (lazy engine).  Every request handler
+receives a SQLAlchemy Session via the `get_db` FastAPI dependency; the session
+is always closed in the finally block regardless of success or error.
+"""
+
+import logging
+import os
+from contextlib import contextmanager
+from typing import Generator
+
+from dotenv import load_dotenv
+from fastapi import Depends, FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, field_validator
+from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session
+
+from classifier import suggest_tags
+from database import get_session_local
+from models import HumanCorrection, ModelSuggestion, Post
+from taxonomy import TAG_TAXONOMY
+
+load_dotenv()
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# App & CORS
+# ---------------------------------------------------------------------------
+
+app = FastAPI(title="Auto-Tagging Pipeline", version="0.2.0")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:5173",   # Vite dev server
+        "http://localhost:3000",   # CRA dev server
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# ---------------------------------------------------------------------------
+# DB dependency
+# ---------------------------------------------------------------------------
+
+def get_db() -> Generator[Session, None, None]:
+    SessionLocal = get_session_local()
+    db: Session = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+
+# ---------------------------------------------------------------------------
+# Request / Response schemas
+# ---------------------------------------------------------------------------
+
+class SuggestTagsRequest(BaseModel):
+    title: str
+    body: str
+
+    @field_validator("title", "body")
+    @classmethod
+    def not_blank(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError("must not be empty or whitespace-only")
+        return v.strip()
+
+
+class SuggestTagsResponse(BaseModel):
+    post_id: str
+    suggestion_id: str
+    suggested_tags: list[str]
+
+
+class ConfirmTagsRequest(BaseModel):
+    suggestion_id: str
+    final_tags: list[str]
+
+    @field_validator("final_tags")
+    @classmethod
+    def validate_tags(cls, tags: list[str]) -> list[str]:
+        if not tags:
+            raise ValueError("final_tags must contain at least one tag")
+        taxonomy_set = set(TAG_TAXONOMY)
+        invalid = [t for t in tags if t not in taxonomy_set]
+        if invalid:
+            raise ValueError(
+                f"Tags not in taxonomy: {invalid}. "
+                f"Allowed values: {TAG_TAXONOMY}"
+            )
+        if len(tags) > 3:
+            raise ValueError("final_tags may contain at most 3 tags")
+        # deduplicate, preserve order
+        seen: set[str] = set()
+        deduped: list[str] = []
+        for t in tags:
+            if t not in seen:
+                seen.add(t)
+                deduped.append(t)
+        return deduped
+
+
+class ConfirmTagsResponse(BaseModel):
+    correction_id: str
+    was_correct: bool
+    tags_added: list[str]
+    tags_removed: list[str]
+
+
+class MetricsResponse(BaseModel):
+    total_corrections: int
+    agreement_rate: float          # fraction of corrections where was_correct=True
+    top_tags_added: list[str]      # most frequently added tags (descending)
+    top_tags_removed: list[str]    # most frequently removed tags (descending)
+
+
+# ---------------------------------------------------------------------------
+# Routes
+# ---------------------------------------------------------------------------
+
+@app.get("/", tags=["health"])
+def health_check():
+    return {"status": "ok"}
+
+
+@app.post("/api/suggest-tags", response_model=SuggestTagsResponse, tags=["tagging"])
+def api_suggest_tags(payload: SuggestTagsRequest, db: Session = Depends(get_db)):
+    """
+    1. Validates that title and body are non-blank (422 otherwise).
+    2. Persists a Post row.
+    3. Calls the Groq classifier; on ANY failure falls back to ["General"]
+       so the post is still created and a suggestion is still stored.
+    4. Persists a ModelSuggestion row.
+    5. Returns post_id, suggestion_id, and suggested_tags.
+    """
+    # --- Create Post --------------------------------------------------------
+    post = Post(title=payload.title, body=payload.body)
+    db.add(post)
+    db.flush()   # get post.id before calling Groq
+
+    # --- Call Groq (errors are caught inside suggest_tags) ------------------
+    try:
+        tags = suggest_tags(payload.title, payload.body)
+    except Exception as exc:   # belt-and-suspenders: suggest_tags should never raise
+        logger.warning("suggest_tags raised unexpectedly: %s", exc)
+        tags = ["General"]
+
+    # --- Create ModelSuggestion ---------------------------------------------
+    suggestion = ModelSuggestion(post_id=post.id, suggested_tags=tags)
+    db.add(suggestion)
+    db.commit()
+    db.refresh(post)
+    db.refresh(suggestion)
+
+    return SuggestTagsResponse(
+        post_id=str(post.id),
+        suggestion_id=str(suggestion.id),
+        suggested_tags=suggestion.suggested_tags,
+    )
+
+
+@app.post("/api/confirm-tags", response_model=ConfirmTagsResponse, tags=["tagging"])
+def api_confirm_tags(payload: ConfirmTagsRequest, db: Session = Depends(get_db)):
+    """
+    Record a human correction for a model suggestion.
+
+    - 404  if suggestion_id does not exist.
+    - 409  if this suggestion already has a correction (UNIQUE constraint).
+    - Precomputes was_correct, tags_added, tags_removed at write time.
+    """
+    import uuid as _uuid
+
+    # --- Resolve suggestion -------------------------------------------------
+    try:
+        suggestion_uuid = _uuid.UUID(payload.suggestion_id)
+    except ValueError:
+        raise HTTPException(status_code=422, detail="suggestion_id must be a valid UUID")
+
+    suggestion: ModelSuggestion | None = db.get(ModelSuggestion, suggestion_uuid)
+    if suggestion is None:
+        raise HTTPException(status_code=404, detail="suggestion not found")
+
+    # --- Precompute diff fields ---------------------------------------------
+    suggested_set = set(suggestion.suggested_tags)
+    final_set = set(payload.final_tags)
+
+    was_correct = suggested_set == final_set
+    tags_added = sorted(final_set - suggested_set)
+    tags_removed = sorted(suggested_set - final_set)
+
+    # --- Persist (catches UNIQUE violation on suggestion_id) ----------------
+    correction = HumanCorrection(
+        post_id=suggestion.post_id,
+        suggestion_id=suggestion.id,
+        final_tags=payload.final_tags,
+        was_correct=was_correct,
+        tags_added=tags_added,
+        tags_removed=tags_removed,
+    )
+    db.add(correction)
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail="This suggestion has already been confirmed. "
+                   "A suggestion can only be corrected once.",
+        )
+
+    db.refresh(correction)
+
+    return ConfirmTagsResponse(
+        correction_id=str(correction.id),
+        was_correct=was_correct,
+        tags_added=tags_added,
+        tags_removed=tags_removed,
+    )
+
+
+@app.get("/api/metrics", response_model=MetricsResponse, tags=["metrics"])
+def api_metrics(db: Session = Depends(get_db)):
+    """
+    Aggregate metrics across all human corrections.
+
+    Uses the precomputed was_correct, tags_added, tags_removed columns so no
+    array operations or application-layer post-processing are needed.
+
+    Returns:
+      - total_corrections : int
+      - agreement_rate    : float  (0.0–1.0; 0.0 if no corrections yet)
+      - top_tags_added    : list[str]  ordered by frequency desc
+      - top_tags_removed  : list[str]  ordered by frequency desc
+    """
+    from sqlalchemy import Integer
+    from sqlalchemy.dialects.postgresql import ARRAY
+    from sqlalchemy import cast, Text
+
+    # --- Totals -------------------------------------------------------------
+    total: int = db.scalar(select(func.count()).select_from(HumanCorrection)) or 0
+    correct: int = (
+        db.scalar(
+            select(func.count()).select_from(HumanCorrection)
+            .where(HumanCorrection.was_correct.is_(True))
+        )
+        or 0
+    )
+    agreement_rate = round(correct / total, 4) if total > 0 else 0.0
+
+    # --- Top added tags (UNNEST + GROUP BY + ORDER BY count desc) -----------
+    added_rows = db.execute(
+        select(
+            func.unnest(HumanCorrection.tags_added).label("tag"),
+            func.count().label("n"),
+        )
+        .group_by("tag")
+        .order_by(func.count().desc())
+        .limit(10)
+    ).all()
+    top_tags_added = [row.tag for row in added_rows]
+
+    # --- Top removed tags ---------------------------------------------------
+    removed_rows = db.execute(
+        select(
+            func.unnest(HumanCorrection.tags_removed).label("tag"),
+            func.count().label("n"),
+        )
+        .group_by("tag")
+        .order_by(func.count().desc())
+        .limit(10)
+    ).all()
+    top_tags_removed = [row.tag for row in removed_rows]
+
+    return MetricsResponse(
+        total_corrections=total,
+        agreement_rate=agreement_rate,
+        top_tags_added=top_tags_added,
+        top_tags_removed=top_tags_removed,
+    )
