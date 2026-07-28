@@ -57,7 +57,7 @@ def _get_client() -> Groq:
     return _client
 
 
-def suggest_tags(title: str, body: str) -> list[str]:
+def suggest_tags(title: str, body: str) -> tuple[list[str], bool]:
     """
     Call the Groq API to suggest 1–3 tags for a post.
 
@@ -68,11 +68,12 @@ def suggest_tags(title: str, body: str) -> list[str]:
 
     Returns
     -------
-    list[str]  1–3 tags, all members of TAG_TAXONOMY.
-               Falls back to ["General"] on any failure.
+    tuple[list[str], bool]
+        (1–3 tags, was_fallback flag).
+        Falls back to (["General"], True) on any failure.
     """
     taxonomy_set = set(TAG_TAXONOMY)
-    fallback = ["General"]
+    fallback = (["General"], True)
 
     try:
         client = _get_client()
@@ -86,7 +87,7 @@ def suggest_tags(title: str, body: str) -> list[str]:
             ],
             temperature=0.0,       # deterministic output
             max_tokens=64,         # JSON array of ≤3 short strings needs at most ~40 tokens
-            timeout=10.0,          # fail fast — don't block the HTTP response
+            timeout=8.0,           # fail fast — don't block the HTTP response
         )
 
         raw = response.choices[0].message.content.strip()
@@ -130,7 +131,7 @@ def suggest_tags(title: str, body: str) -> list[str]:
             return fallback
 
         # Cap at 3
-        return valid_tags[:3]
+        return (valid_tags[:3], False)
 
     except Exception as exc:  # noqa: BLE001
         logger.warning("classifier: Groq call failed (%s: %s) — falling back to %s",

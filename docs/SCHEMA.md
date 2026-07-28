@@ -36,6 +36,7 @@ Stores the tag suggestions produced by the ML model for a given post.
 | `id` | `uuid` | PK, default `gen_random_uuid()` | Unique identifier for this suggestion set |
 | `post_id` | `uuid` | NOT NULL, FK → `posts.id` | Which post these suggestions belong to |
 | `suggested_tags` | `text[]` | NOT NULL, max 3 items (app-enforced) | The tags the model suggested |
+| `was_fallback` | `boolean` | NOT NULL, default `false` | `true` if the model call failed or timed out and fell back to default tags |
 | `created_at` | `timestamptz` | NOT NULL, default `now()` | When suggestions were generated |
 
 **Note:** The 3-tag maximum is enforced at the application layer (not a DB constraint) so the constraint is visible in code and can be changed without a schema migration.
@@ -89,7 +90,7 @@ These three fields are derived values — they could be recomputed from `suggest
 
 ## Indexes & Constraints
 
-Added in migration `fbdce510ef7e` on top of the initial schema.
+Added in migrations `fbdce510ef7e` and `e2654160a1a8` (`add_was_fallback_to_model_suggestions`) on top of the initial schema `f9c935596961`.
 
 ### Unique Constraint
 

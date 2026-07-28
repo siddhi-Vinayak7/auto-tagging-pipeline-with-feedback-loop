@@ -56,16 +56,18 @@ status, body = request("POST", "/api/suggest-tags", {
 check("status 200", status == 200, f"got {status}")
 check("has post_id", "post_id" in body, str(body))
 check("has suggestion_id", "suggestion_id" in body)
+check("has was_fallback", "was_fallback" in body, str(body))
 check("suggested_tags is list", isinstance(body.get("suggested_tags"), list))
 check("1-3 tags returned", 1 <= len(body.get("suggested_tags", [])) <= 3,
       str(body.get("suggested_tags")))
 post_id = body.get("post_id")
 suggestion_id = body.get("suggestion_id")
 suggested_tags = body.get("suggested_tags", [])
-print(f"     suggested_tags = {suggested_tags}")
+was_fallback = body.get("was_fallback")
+print(f"     suggested_tags = {suggested_tags}, was_fallback = {was_fallback}")
 
-# ── 3. POST /api/suggest-tags — blank title → 422 ────────────────────────────
-print("\n3. POST /api/suggest-tags (blank title → 422)")
+# ── 3. POST /api/suggest-tags — blank title -> 422 ────────────────────────────
+print("\n3. POST /api/suggest-tags (blank title -> 422)")
 status, body = request("POST", "/api/suggest-tags", {"title": "   ", "body": "some body"})
 check("status 422", status == 422, f"got {status}")
 
@@ -83,8 +85,8 @@ check("was_correct is True (tags unchanged)", body.get("was_correct") is True,
 correction_id = body.get("correction_id")
 print(f"     correction = {body}")
 
-# ── 5. POST /api/confirm-tags — duplicate → 409 ──────────────────────────────
-print("\n5. POST /api/confirm-tags (duplicate → 409)")
+# ── 5. POST /api/confirm-tags — duplicate -> 409 ──────────────────────────────
+print("\n5. POST /api/confirm-tags (duplicate -> 409)")
 status, body = request("POST", "/api/confirm-tags", {
     "suggestion_id": suggestion_id,
     "final_tags": final_tags,
@@ -92,8 +94,8 @@ status, body = request("POST", "/api/confirm-tags", {
 check("status 409", status == 409, f"got {status}")
 print(f"     detail = {body.get('detail')}")
 
-# ── 6. POST /api/confirm-tags — invalid tag → 422 ────────────────────────────
-print("\n6. POST /api/suggest-tags → confirm with out-of-taxonomy tag → 422")
+# ── 6. POST /api/confirm-tags — invalid tag -> 422 ────────────────────────────
+print("\n6. POST /api/suggest-tags -> confirm with out-of-taxonomy tag -> 422")
 status, body2 = request("POST", "/api/suggest-tags", {
     "title": "Another post for tag validation test",
     "body": "Just testing that bad tags are rejected.",
@@ -112,14 +114,27 @@ else:
 print("\n7. GET /api/metrics")
 status, body = request("GET", "/api/metrics")
 check("status 200", status == 200, f"got {status}")
+check("has total_suggestions", "total_suggestions" in body, str(body))
 check("has total_corrections", "total_corrections" in body)
 check("has agreement_rate", "agreement_rate" in body)
+check("has per_tag_stats", "per_tag_stats" in body, str(body))
+check("total_suggestions >= 1", body.get("total_suggestions", 0) >= 1,
+      str(body.get("total_suggestions")))
 check("total_corrections >= 1", body.get("total_corrections", 0) >= 1,
       str(body.get("total_corrections")))
-check("agreement_rate 0.0–1.0",
+check("agreement_rate 0.0-1.0",
       0.0 <= body.get("agreement_rate", -1) <= 1.0,
       str(body.get("agreement_rate")))
-print(f"     metrics = {body}")
+
+per_tag_stats = body.get("per_tag_stats", {})
+check("per_tag_stats has 8 taxonomy tags", len(per_tag_stats) == 8, f"got {len(per_tag_stats)}")
+sample_tag_ok = True
+for tag, stats in per_tag_stats.items():
+    if "times_suggested" not in stats or "times_survived" not in stats:
+        sample_tag_ok = False
+        break
+check("per_tag_stats structure valid", sample_tag_ok, str(per_tag_stats))
+print(f"     metrics = {json.dumps(body, indent=2)}")
 
 # ── Summary ───────────────────────────────────────────────────────────────────
 print()

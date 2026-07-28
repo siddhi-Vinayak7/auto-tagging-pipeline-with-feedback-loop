@@ -90,6 +90,7 @@ class SuggestTagsResponse(BaseModel):
     post_id: str
     suggestion_id: str
     suggested_tags: list[str]
+    was_fallback: bool
 
 
 class ConfirmTagsRequest(BaseModel):
@@ -127,9 +128,16 @@ class ConfirmTagsResponse(BaseModel):
     tags_removed: list[str]
 
 
+class PerTagStat(BaseModel):
+    times_suggested: int
+    times_survived: int
+
+
 class MetricsResponse(BaseModel):
+    total_suggestions: int
     total_corrections: int
     agreement_rate: float          # fraction of corrections where was_correct=True
+    per_tag_stats: dict[str, PerTagStat]
     top_tags_added: list[str]      # most frequently added tags (descending)
     top_tags_removed: list[str]    # most frequently removed tags (descending)
 
@@ -150,8 +158,8 @@ def api_suggest_tags(payload: SuggestTagsRequest, db: Session = Depends(get_db))
     2. Persists a Post row.
     3. Calls the Groq classifier; on ANY failure falls back to ["General"]
        so the post is still created and a suggestion is still stored.
-    4. Persists a ModelSuggestion row.
-    5. Returns post_id, suggestion_id, and suggested_tags.
+    4. Persists a ModelSuggestion row with was_fallback flag.
+    5. Returns post_id, suggestion_id, suggested_tags, and was_fallback.
     """
     # --- Create Post --------------------------------------------------------
     post = Post(title=payload.title, body=payload.body)
@@ -160,13 +168,17 @@ def api_suggest_tags(payload: SuggestTagsRequest, db: Session = Depends(get_db))
 
     # --- Call Groq (errors are caught inside suggest_tags) ------------------
     try:
-        tags = suggest_tags(payload.title, payload.body)
+        tags, was_fallback = suggest_tags(payload.title, payload.body)
     except Exception as exc:   # belt-and-suspenders: suggest_tags should never raise
         logger.warning("suggest_tags raised unexpectedly: %s", exc)
-        tags = ["General"]
+        tags, was_fallback = ["General"], True
 
     # --- Create ModelSuggestion ---------------------------------------------
-    suggestion = ModelSuggestion(post_id=post.id, suggested_tags=tags)
+    suggestion = ModelSuggestion(
+        post_id=post.id,
+        suggested_tags=tags,
+        was_fallback=was_fallback,
+    )
     db.add(suggestion)
     db.commit()
     db.refresh(post)
@@ -176,6 +188,7 @@ def api_suggest_tags(payload: SuggestTagsRequest, db: Session = Depends(get_db))
         post_id=str(post.id),
         suggestion_id=str(suggestion.id),
         suggested_tags=suggestion.suggested_tags,
+        was_fallback=suggestion.was_fallback,
     )
 
 
@@ -241,22 +254,17 @@ def api_confirm_tags(payload: ConfirmTagsRequest, db: Session = Depends(get_db))
 @app.get("/api/metrics", response_model=MetricsResponse, tags=["metrics"])
 def api_metrics(db: Session = Depends(get_db)):
     """
-    Aggregate metrics across all human corrections.
-
-    Uses the precomputed was_correct, tags_added, tags_removed columns so no
-    array operations or application-layer post-processing are needed.
+    Aggregate metrics across all human corrections and suggestions.
 
     Returns:
+      - total_suggestions : int
       - total_corrections : int
       - agreement_rate    : float  (0.0–1.0; 0.0 if no corrections yet)
+      - per_tag_stats     : dict[str, PerTagStat]
       - top_tags_added    : list[str]  ordered by frequency desc
       - top_tags_removed  : list[str]  ordered by frequency desc
     """
-    from sqlalchemy import Integer
-    from sqlalchemy.dialects.postgresql import ARRAY
-    from sqlalchemy import cast, Text
-
-    # --- Totals -------------------------------------------------------------
+    total_suggestions: int = db.scalar(select(func.count()).select_from(ModelSuggestion)) or 0
     total: int = db.scalar(select(func.count()).select_from(HumanCorrection)) or 0
     correct: int = (
         db.scalar(
@@ -266,6 +274,42 @@ def api_metrics(db: Session = Depends(get_db)):
         or 0
     )
     agreement_rate = round(correct / total, 4) if total > 0 else 0.0
+
+    # --- Per-tag stats ------------------------------------------------------
+    suggested_rows = db.execute(
+        select(
+            func.unnest(ModelSuggestion.suggested_tags).label("tag"),
+            func.count().label("n"),
+        )
+        .group_by("tag")
+    ).all()
+    suggested_counts = {row.tag: row.n for row in suggested_rows}
+
+    survived_subquery = (
+        select(
+            func.unnest(HumanCorrection.final_tags).label("tag"),
+            ModelSuggestion.suggested_tags.label("suggested_tags"),
+        )
+        .join(ModelSuggestion, HumanCorrection.suggestion_id == ModelSuggestion.id)
+        .subquery()
+    )
+    survived_rows = db.execute(
+        select(
+            survived_subquery.c.tag,
+            func.count().label("n"),
+        )
+        .where(survived_subquery.c.tag == func.any(survived_subquery.c.suggested_tags))
+        .group_by(survived_subquery.c.tag)
+    ).all()
+    survived_counts = {row.tag: row.n for row in survived_rows}
+
+    per_tag_stats = {
+        tag: PerTagStat(
+            times_suggested=suggested_counts.get(tag, 0),
+            times_survived=survived_counts.get(tag, 0),
+        )
+        for tag in TAG_TAXONOMY
+    }
 
     # --- Top added tags (UNNEST + GROUP BY + ORDER BY count desc) -----------
     added_rows = db.execute(
@@ -292,8 +336,10 @@ def api_metrics(db: Session = Depends(get_db)):
     top_tags_removed = [row.tag for row in removed_rows]
 
     return MetricsResponse(
+        total_suggestions=total_suggestions,
         total_corrections=total,
         agreement_rate=agreement_rate,
+        per_tag_stats=per_tag_stats,
         top_tags_added=top_tags_added,
         top_tags_removed=top_tags_removed,
     )
