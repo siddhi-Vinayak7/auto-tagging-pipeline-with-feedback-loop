@@ -51,7 +51,7 @@ app.add_middleware(
     allow_origins=[
         "http://localhost:5173",   # Vite dev server
         "http://localhost:3000",   # CRA dev server
-        "https://auto-tagging-pipeline-with-feedback-loop.vercel.app",  # Production Vercel app
+        "https://auto-tagging-pipeline-with-feedback.vercel.app",  # Production Vercel app
     ],
     allow_credentials=True,
     allow_methods=["*"],
