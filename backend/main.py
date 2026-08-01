@@ -273,6 +273,7 @@ def api_metrics(db: Session = Depends(get_db)):
       - per_tag_stats     : dict[str, PerTagStat]
       - top_tags_added    : list[str]  ordered by frequency desc
       - top_tags_removed  : list[str]  ordered by frequency desc
+      - daily_trend       : list[DailyTrendEntry] chronological entries
     """
     total_suggestions: int = db.scalar(select(func.count()).select_from(ModelSuggestion)) or 0
     total: int = db.scalar(select(func.count()).select_from(HumanCorrection)) or 0
