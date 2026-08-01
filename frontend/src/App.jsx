@@ -516,6 +516,7 @@ function MetricsView({ setApiStatus }) {
     per_tag_stats = {},
     top_tags_added = [],
     top_tags_removed = [],
+    daily_trend = [],
   } = metrics || {};
 
   const agreementPct = (agreement_rate * 100).toFixed(1);
@@ -641,7 +642,7 @@ function MetricsView({ setApiStatus }) {
       <div className="bg-white border border-slate-200 rounded-2xl p-5 space-y-4 shadow-sm">
         <h3 className="text-sm font-bold text-slate-900">Daily Performance Trend (Over Time)</h3>
 
-        {(!metrics.daily_trend || metrics.daily_trend.length === 0) ? (
+        {(!daily_trend || daily_trend.length === 0) ? (
           <p className="text-xs text-slate-400 font-mono italic">No trend data recorded yet.</p>
         ) : (
           <div className="overflow-x-auto">
@@ -655,7 +656,7 @@ function MetricsView({ setApiStatus }) {
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100 text-slate-700">
-                {metrics.daily_trend.map(entry => {
+                {daily_trend.map(entry => {
                   const ratePct = (entry.agreement_rate * 100).toFixed(1) + '%';
                   return (
                     <tr key={entry.date} className="hover:bg-slate-50 transition-colors">
