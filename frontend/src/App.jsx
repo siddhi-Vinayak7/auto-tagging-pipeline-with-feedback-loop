@@ -636,6 +636,41 @@ function MetricsView({ setApiStatus }) {
           </table>
         </div>
       </div>
+
+      {/* Daily Performance Trend (Over Time) */}
+      <div className="bg-white border border-slate-200 rounded-2xl p-5 space-y-4 shadow-sm">
+        <h3 className="text-sm font-bold text-slate-900">Daily Performance Trend (Over Time)</h3>
+
+        {(!metrics.daily_trend || metrics.daily_trend.length === 0) ? (
+          <p className="text-xs text-slate-400 font-mono italic">No trend data recorded yet.</p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-xs border-collapse">
+              <thead>
+                <tr className="border-b border-slate-200 text-slate-500 font-mono uppercase tracking-wider font-semibold">
+                  <th className="py-3 px-4">Date</th>
+                  <th className="py-3 px-4 text-right">Suggestions</th>
+                  <th className="py-3 px-4 text-right">Corrections</th>
+                  <th className="py-3 px-4 text-right">Agreement Rate</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100 text-slate-700">
+                {metrics.daily_trend.map(entry => {
+                  const ratePct = (entry.agreement_rate * 100).toFixed(1) + '%';
+                  return (
+                    <tr key={entry.date} className="hover:bg-slate-50 transition-colors">
+                      <td className="py-3 px-4 font-mono font-semibold text-slate-900">{entry.date}</td>
+                      <td className="py-3 px-4 text-right font-mono text-slate-600">{entry.suggestions}</td>
+                      <td className="py-3 px-4 text-right font-mono text-slate-600">{entry.corrections}</td>
+                      <td className="py-3 px-4 text-right font-mono font-semibold text-emerald-600">{ratePct}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
     </div>
   );
 }

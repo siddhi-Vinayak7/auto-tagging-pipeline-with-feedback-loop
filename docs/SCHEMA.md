@@ -86,6 +86,8 @@ These three fields are derived values — they could be recomputed from `suggest
 
 4. **Write-time cost is negligible.** The set operations happen exactly once per correction write, at a moment where the caller is already waiting for an HTTP response. This is far cheaper than recalculating on every read of the metrics dashboard.
 
+5. **Chronological Daily Trends.** Stored timestamps (`created_at`) allow `GET /api/metrics` to group suggestions, corrections, and agreement rates by `DATE(created_at)` into a `daily_trend` array for tracking model performance over time.
+
 ---
 
 ## Indexes & Constraints

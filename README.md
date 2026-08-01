@@ -43,8 +43,8 @@ The LLM is explicitly constrained to assign between 1 and 3 tags exclusively fro
 - **Behavior**: Validates taxonomy compliance and enforces a UNIQUE constraint on `suggestion_id` (returns HTTP 409 Conflict on duplicates). Precomputes `was_correct`, `tags_added`, and `tags_removed` at write time.
 
 ### 3. `GET /api/metrics`
-- **Response**: `{ "total_suggestions": int, "total_corrections": int, "agreement_rate": float, "per_tag_stats": {...}, "top_tags_added": [...], "top_tags_removed": [...] }`
-- **Behavior**: Aggregates real database counts across all suggestions and human corrections.
+- **Response**: `{ "total_suggestions": int, "total_corrections": int, "agreement_rate": float, "per_tag_stats": {...}, "top_tags_added": [...], "top_tags_removed": [...], "daily_trend": [...] }`
+- **Behavior**: Aggregates real database counts across all suggestions and human corrections, including chronological daily agreement trend data (`daily_trend`).
 
 ---
 

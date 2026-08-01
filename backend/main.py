@@ -26,7 +26,7 @@ from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, field_validator
-from sqlalchemy import func, select
+from sqlalchemy import case, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -129,6 +129,13 @@ class ConfirmTagsResponse(BaseModel):
     tags_removed: list[str]
 
 
+class DailyTrendEntry(BaseModel):
+    date: str                  # ISO date string "YYYY-MM-DD"
+    suggestions: int          # count of model_suggestions created on that day
+    corrections: int          # count of human_corrections created on that day
+    agreement_rate: float     # was_correct=True / corrections on that day, 0.0 if 0 corrections
+
+
 class PerTagStat(BaseModel):
     times_suggested: int
     times_survived: int
@@ -141,6 +148,8 @@ class MetricsResponse(BaseModel):
     per_tag_stats: dict[str, PerTagStat]
     top_tags_added: list[str]      # most frequently added tags (descending)
     top_tags_removed: list[str]    # most frequently removed tags (descending)
+    daily_trend: list[DailyTrendEntry]
+
 
 
 # ---------------------------------------------------------------------------
@@ -336,6 +345,50 @@ def api_metrics(db: Session = Depends(get_db)):
     ).all()
     top_tags_removed = [row.tag for row in removed_rows]
 
+    # --- Daily trend over time ----------------------------------------------
+    sug_date_col = func.to_char(ModelSuggestion.created_at, "YYYY-MM-DD").label("date_str")
+    sug_by_day_rows = db.execute(
+        select(
+            sug_date_col,
+            func.count().label("n"),
+        )
+        .group_by("date_str")
+    ).all()
+    sug_by_day = {row.date_str: row.n for row in sug_by_day_rows if row.date_str}
+
+    corr_date_col = func.to_char(HumanCorrection.created_at, "YYYY-MM-DD").label("date_str")
+    corr_by_day_rows = db.execute(
+        select(
+            corr_date_col,
+            func.count().label("n_total"),
+            func.sum(case((HumanCorrection.was_correct.is_(True), 1), else_=0)).label("n_correct"),
+        )
+        .group_by("date_str")
+    ).all()
+    corr_by_day = {
+        row.date_str: (row.n_total, int(row.n_correct or 0))
+        for row in corr_by_day_rows
+        if row.date_str
+    }
+
+    all_dates = sorted(set(sug_by_day.keys()).union(set(corr_by_day.keys())))
+
+    daily_trend: list[DailyTrendEntry] = []
+    for d_str in all_dates:
+        s_count = sug_by_day.get(d_str, 0)
+        c_total, c_correct = corr_by_day.get(d_str, (0, 0))
+        if s_count == 0 and c_total == 0:
+            continue
+        day_agreement = round(c_correct / c_total, 4) if c_total > 0 else 0.0
+        daily_trend.append(
+            DailyTrendEntry(
+                date=d_str,
+                suggestions=s_count,
+                corrections=c_total,
+                agreement_rate=day_agreement,
+            )
+        )
+
     return MetricsResponse(
         total_suggestions=total_suggestions,
         total_corrections=total,
@@ -343,4 +396,5 @@ def api_metrics(db: Session = Depends(get_db)):
         per_tag_stats=per_tag_stats,
         top_tags_added=top_tags_added,
         top_tags_removed=top_tags_removed,
+        daily_trend=daily_trend,
     )
