@@ -110,14 +110,37 @@ if status == 200:
 else:
     check("could not create second post for test", False, str(body2))
 
-# ── 7. GET /api/metrics ───────────────────────────────────────────────────────
-print("\n7. GET /api/metrics")
+# ── 7. POST /api/suggest-tags & /api/confirm-tags — tag substitution ─────────
+print("\n7. POST /api/suggest-tags -> confirm with tag substitution")
+status, body_sub = request("POST", "/api/suggest-tags", {
+    "title": "Machine learning research paper on neural network performance",
+    "body": "Analyzing transformers and deep learning models for classification.",
+})
+check("status 200 for suggestion creation", status == 200, f"got {status}")
+sub_suggestion_id = body_sub.get("suggestion_id")
+sub_suggested_tags = body_sub.get("suggested_tags", [])
+from_tag = sub_suggested_tags[0] if sub_suggested_tags else "General"
+to_tag = "AI/ML" if from_tag != "AI/ML" else "Design"
+
+status, body_confirm = request("POST", "/api/confirm-tags", {
+    "suggestion_id": sub_suggestion_id,
+    "final_tags": [to_tag],
+})
+check("status 200 for tag substitution", status == 200, f"got {status}")
+check("was_correct is False", body_confirm.get("was_correct") is False, str(body_confirm))
+check("tags_removed contains from_tag", from_tag in body_confirm.get("tags_removed", []), str(body_confirm))
+check("tags_added contains to_tag", to_tag in body_confirm.get("tags_added", []), str(body_confirm))
+print(f"     substitution recorded: {from_tag} -> {to_tag}")
+
+# ── 8. GET /api/metrics ───────────────────────────────────────────────────────
+print("\n8. GET /api/metrics")
 status, body = request("GET", "/api/metrics")
 check("status 200", status == 200, f"got {status}")
 check("has total_suggestions", "total_suggestions" in body, str(body))
 check("has total_corrections", "total_corrections" in body)
 check("has agreement_rate", "agreement_rate" in body)
 check("has per_tag_stats", "per_tag_stats" in body, str(body))
+check("has tag_substitution_patterns", "tag_substitution_patterns" in body, str(body))
 check("total_suggestions >= 1", body.get("total_suggestions", 0) >= 1,
       str(body.get("total_suggestions")))
 check("total_corrections >= 1", body.get("total_corrections", 0) >= 1,
@@ -134,6 +157,18 @@ for tag, stats in per_tag_stats.items():
         sample_tag_ok = False
         break
 check("per_tag_stats structure valid", sample_tag_ok, str(per_tag_stats))
+
+sub_patterns = body.get("tag_substitution_patterns", [])
+check("tag_substitution_patterns is list", isinstance(sub_patterns, list), str(sub_patterns))
+
+found_pattern = False
+for pat in sub_patterns:
+    if pat.get("from_tag") == from_tag and pat.get("to_tag") == to_tag and pat.get("count", 0) >= 1:
+        found_pattern = True
+        break
+check(f"tag_substitution_patterns contains {{from_tag: {from_tag!r}, to_tag: {to_tag!r}, count >= 1}}",
+      found_pattern, str(sub_patterns))
+
 print(f"     metrics = {json.dumps(body, indent=2)}")
 
 # ── Summary ───────────────────────────────────────────────────────────────────
@@ -143,3 +178,4 @@ if all_ok:
 else:
     print("[FAIL] One or more smoke tests failed.\n")
     sys.exit(1)
+

@@ -19,6 +19,7 @@ is always closed in the finally block regardless of success or error.
 
 import logging
 import os
+from collections import Counter
 from contextlib import contextmanager
 from typing import Generator
 
@@ -141,6 +142,12 @@ class PerTagStat(BaseModel):
     times_survived: int
 
 
+class TagSubstitutionPattern(BaseModel):
+    from_tag: str
+    to_tag: str
+    count: int
+
+
 class MetricsResponse(BaseModel):
     total_suggestions: int
     total_corrections: int
@@ -149,6 +156,7 @@ class MetricsResponse(BaseModel):
     top_tags_added: list[str]      # most frequently added tags (descending)
     top_tags_removed: list[str]    # most frequently removed tags (descending)
     daily_trend: list[DailyTrendEntry]
+    tag_substitution_patterns: list[TagSubstitutionPattern]
 
 
 
@@ -287,32 +295,52 @@ def api_metrics(db: Session = Depends(get_db)):
     agreement_rate = round(correct / total, 4) if total > 0 else 0.0
 
     # --- Per-tag stats ------------------------------------------------------
-    suggested_rows = db.execute(
-        select(
-            func.unnest(ModelSuggestion.suggested_tags).label("tag"),
-            func.count().label("n"),
-        )
-        .group_by("tag")
-    ).all()
-    suggested_counts = {row.tag: row.n for row in suggested_rows}
+    if db.bind.dialect.name == "postgresql":
+        suggested_rows = db.execute(
+            select(
+                func.unnest(ModelSuggestion.suggested_tags).label("tag"),
+                func.count().label("n"),
+            )
+            .group_by("tag")
+        ).all()
+        suggested_counts = {row.tag: row.n for row in suggested_rows}
 
-    survived_subquery = (
-        select(
-            func.unnest(HumanCorrection.final_tags).label("tag"),
-            ModelSuggestion.suggested_tags.label("suggested_tags"),
+        survived_subquery = (
+            select(
+                func.unnest(HumanCorrection.final_tags).label("tag"),
+                ModelSuggestion.suggested_tags.label("suggested_tags"),
+            )
+            .join(ModelSuggestion, HumanCorrection.suggestion_id == ModelSuggestion.id)
+            .subquery()
         )
-        .join(ModelSuggestion, HumanCorrection.suggestion_id == ModelSuggestion.id)
-        .subquery()
-    )
-    survived_rows = db.execute(
-        select(
-            survived_subquery.c.tag,
-            func.count().label("n"),
-        )
-        .where(survived_subquery.c.tag == func.any(survived_subquery.c.suggested_tags))
-        .group_by(survived_subquery.c.tag)
-    ).all()
-    survived_counts = {row.tag: row.n for row in survived_rows}
+        survived_rows = db.execute(
+            select(
+                survived_subquery.c.tag,
+                func.count().label("n"),
+            )
+            .where(survived_subquery.c.tag == func.any(survived_subquery.c.suggested_tags))
+            .group_by(survived_subquery.c.tag)
+        ).all()
+        survived_counts = {row.tag: row.n for row in survived_rows}
+    else:
+        suggested_rows = db.execute(select(ModelSuggestion.suggested_tags)).scalars().all()
+        suggested_counts = Counter()
+        for tags in suggested_rows:
+            if tags:
+                for t in tags:
+                    suggested_counts[t] += 1
+
+        corr_sug_rows = db.execute(
+            select(HumanCorrection.final_tags, ModelSuggestion.suggested_tags)
+            .join(ModelSuggestion, HumanCorrection.suggestion_id == ModelSuggestion.id)
+        ).all()
+        survived_counts = Counter()
+        for final_tags, suggested_tags in corr_sug_rows:
+            if final_tags and suggested_tags:
+                sug_set = set(suggested_tags)
+                for t in final_tags:
+                    if t in sug_set:
+                        survived_counts[t] += 1
 
     per_tag_stats = {
         tag: PerTagStat(
@@ -322,32 +350,46 @@ def api_metrics(db: Session = Depends(get_db)):
         for tag in TAG_TAXONOMY
     }
 
-    # --- Top added tags (UNNEST + GROUP BY + ORDER BY count desc) -----------
-    added_rows = db.execute(
-        select(
-            func.unnest(HumanCorrection.tags_added).label("tag"),
-            func.count().label("n"),
-        )
-        .group_by("tag")
-        .order_by(func.count().desc())
-        .limit(10)
-    ).all()
-    top_tags_added = [row.tag for row in added_rows]
+    # --- Top added tags & top removed tags -----------------------------------
+    if db.bind.dialect.name == "postgresql":
+        added_rows = db.execute(
+            select(
+                func.unnest(HumanCorrection.tags_added).label("tag"),
+                func.count().label("n"),
+            )
+            .group_by("tag")
+            .order_by(func.count().desc())
+            .limit(10)
+        ).all()
+        top_tags_added = [row.tag for row in added_rows]
 
-    # --- Top removed tags ---------------------------------------------------
-    removed_rows = db.execute(
-        select(
-            func.unnest(HumanCorrection.tags_removed).label("tag"),
-            func.count().label("n"),
-        )
-        .group_by("tag")
-        .order_by(func.count().desc())
-        .limit(10)
-    ).all()
-    top_tags_removed = [row.tag for row in removed_rows]
+        removed_rows = db.execute(
+            select(
+                func.unnest(HumanCorrection.tags_removed).label("tag"),
+                func.count().label("n"),
+            )
+            .group_by("tag")
+            .order_by(func.count().desc())
+            .limit(10)
+        ).all()
+        top_tags_removed = [row.tag for row in removed_rows]
+    else:
+        all_added = db.execute(select(HumanCorrection.tags_added)).scalars().all()
+        added_counter = Counter(t for tags in all_added if tags for t in tags)
+        top_tags_added = [t for t, _ in added_counter.most_common(10)]
+
+        all_removed = db.execute(select(HumanCorrection.tags_removed)).scalars().all()
+        removed_counter = Counter(t for tags in all_removed if tags for t in tags)
+        top_tags_removed = [t for t, _ in removed_counter.most_common(10)]
 
     # --- Daily trend over time ----------------------------------------------
-    sug_date_col = func.to_char(ModelSuggestion.created_at, "YYYY-MM-DD").label("date_str")
+    if db.bind.dialect.name == "postgresql":
+        sug_date_col = func.to_char(ModelSuggestion.created_at, "YYYY-MM-DD").label("date_str")
+        corr_date_col = func.to_char(HumanCorrection.created_at, "YYYY-MM-DD").label("date_str")
+    else:
+        sug_date_col = func.substr(ModelSuggestion.created_at, 1, 10).label("date_str")
+        corr_date_col = func.substr(HumanCorrection.created_at, 1, 10).label("date_str")
+
     sug_by_day_rows = db.execute(
         select(
             sug_date_col,
@@ -357,7 +399,6 @@ def api_metrics(db: Session = Depends(get_db)):
     ).all()
     sug_by_day = {row.date_str: row.n for row in sug_by_day_rows if row.date_str}
 
-    corr_date_col = func.to_char(HumanCorrection.created_at, "YYYY-MM-DD").label("date_str")
     corr_by_day_rows = db.execute(
         select(
             corr_date_col,
@@ -390,6 +431,24 @@ def api_metrics(db: Session = Depends(get_db)):
             )
         )
 
+    # --- Tag substitution patterns (1-to-1 substitutions only) ---------------
+    corr_sub_rows = db.execute(
+        select(HumanCorrection.tags_removed, HumanCorrection.tags_added)
+    ).all()
+
+    pair_counts: Counter[tuple[str, str]] = Counter()
+    for removed_list, added_list in corr_sub_rows:
+        if removed_list and added_list and len(removed_list) == 1 and len(added_list) == 1:
+            pair_counts[(removed_list[0], added_list[0])] += 1
+
+    tag_substitution_patterns = [
+        TagSubstitutionPattern(from_tag=r, to_tag=a, count=c)
+        for (r, a), c in sorted(
+            pair_counts.items(),
+            key=lambda item: (-item[1], item[0][0], item[0][1]),
+        )
+    ]
+
     return MetricsResponse(
         total_suggestions=total_suggestions,
         total_corrections=total,
@@ -398,4 +457,5 @@ def api_metrics(db: Session = Depends(get_db)):
         top_tags_added=top_tags_added,
         top_tags_removed=top_tags_removed,
         daily_trend=daily_trend,
+        tag_substitution_patterns=tag_substitution_patterns,
     )

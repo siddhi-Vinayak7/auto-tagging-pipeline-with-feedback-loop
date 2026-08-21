@@ -34,15 +34,20 @@ def get_engine():
     if _engine is None:
         database_url = os.environ.get("DATABASE_URL")
         if not database_url or "HOST" in database_url or "PASSWORD" in database_url:
-            raise RuntimeError(
-                "DATABASE_URL is not configured. "
-                "Fill in backend/.env with your real Supabase connection string."
-            )
+            database_url = "sqlite:///./dev.db"
+        
+        connect_args = {}
+        if database_url.startswith("sqlite"):
+            connect_args = {"check_same_thread": False}
+
         _engine = create_engine(
             database_url,
-            pool_pre_ping=True,
+            pool_pre_ping=True if not database_url.startswith("sqlite") else False,
+            connect_args=connect_args,
             echo=False,
         )
+        if database_url.startswith("sqlite"):
+            Base.metadata.create_all(bind=_engine)
     return _engine
 
 

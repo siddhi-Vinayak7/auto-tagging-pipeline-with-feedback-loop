@@ -88,6 +88,8 @@ These three fields are derived values — they could be recomputed from `suggest
 
 5. **Chronological Daily Trends.** Stored timestamps (`created_at`) allow `GET /api/metrics` to group suggestions, corrections, and agreement rates by `DATE(created_at)` into a `daily_trend` array for tracking model performance over time.
 
+6. **Tag Substitution Tracking.** When a correction has exactly one tag removed and exactly one tag added (`len(tags_removed) == 1 and len(tags_added) == 1`), `GET /api/metrics` records the 1-to-1 substitution pair in `tag_substitution_patterns` (e.g. `[{"from_tag": "LLM", "to_tag": "AI", "count": 4}, {"from_tag": "Frontend", "to_tag": "Design", "count": 1}]`) sorted by frequency descending. Multi-tag corrections (0 or 2+ tags removed/added) are excluded from substitution patterns to avoid Cartesian-product mapping ambiguities.
+
 ---
 
 ## Indexes & Constraints
