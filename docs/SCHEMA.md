@@ -90,6 +90,11 @@ These three fields are derived values — they could be recomputed from `suggest
 
 6. **Tag Substitution Tracking.** When a correction has exactly one tag removed and exactly one tag added (`len(tags_removed) == 1 and len(tags_added) == 1`), `GET /api/metrics` records the 1-to-1 substitution pair in `tag_substitution_patterns` (e.g. `[{"from_tag": "LLM", "to_tag": "AI", "count": 4}, {"from_tag": "Frontend", "to_tag": "Design", "count": 1}]`) sorted by frequency descending. Multi-tag corrections (0 or 2+ tags removed/added) are excluded from substitution patterns to avoid Cartesian-product mapping ambiguities.
 
+> [!NOTE]
+> **Known Limitations:**
+> - **Multi-Tag Corrections Exclusion**: Corrections with more than 1 tag removed or added do not contribute to `tag_substitution_patterns` (to avoid ambiguous pairwise combinations).
+> - **Suggestion vs. Correction Counts**: `total_suggestions` may exceed `total_corrections` when suggestions are generated but never confirmed (e.g. discarded posts).
+
 ---
 
 ## Indexes & Constraints
