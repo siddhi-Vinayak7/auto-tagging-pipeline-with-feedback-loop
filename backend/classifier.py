@@ -80,13 +80,13 @@ def suggest_tags(title: str, body: str) -> tuple[list[str], bool]:
         user_content = f"Title: {title}\n\nBody:\n{body}"
 
         response = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
+            model="openai/gpt-oss-120b",
             messages=[
                 {"role": "system", "content": _SYSTEM_PROMPT},
                 {"role": "user", "content": user_content},
             ],
             temperature=0.0,       # deterministic output
-            max_tokens=64,         # JSON array of ≤3 short strings needs at most ~40 tokens
+            max_tokens=512,        # openai/gpt-oss-120b uses reasoning tokens before content
             timeout=8.0,           # fail fast — don't block the HTTP response
         )
 

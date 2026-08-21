@@ -1,6 +1,6 @@
 # Auto-Tagging Pipeline with Feedback Loop
 
-An end-to-end topic tag suggestion service powered by FastAPI, PostgreSQL (Supabase), Groq (`llama-3.3-70b-versatile`), and React (Vite + Tailwind CSS).
+An end-to-end topic tag suggestion service powered by FastAPI, PostgreSQL (Supabase), Groq (`openai/gpt-oss-120b`), and React (Vite + Tailwind CSS).
 
 The system classifies post titles and bodies into a fixed taxonomy, allows human reviewers to accept or refine tag suggestions, stores precomputed feedback metrics, and tracks model performance over time.
 

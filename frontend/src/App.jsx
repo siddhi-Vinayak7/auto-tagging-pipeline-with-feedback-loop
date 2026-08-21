@@ -96,7 +96,7 @@ export default function App() {
 
       {/* Footer */}
       <footer className="border-t border-slate-200 py-4 text-center text-xs font-mono text-slate-400">
-        Auto-Tagging Feedback System &bull; Fast-API & Groq (llama-3.3-70b)
+        Auto-Tagging Feedback System &bull; Fast-API & Groq (openai/gpt-oss-120b)
       </footer>
     </div>
   );
