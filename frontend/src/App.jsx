@@ -517,9 +517,11 @@ function MetricsView({ setApiStatus }) {
     top_tags_added = [],
     top_tags_removed = [],
     daily_trend = [],
+    tag_substitution_patterns = [],
   } = metrics || {};
 
   const agreementPct = (agreement_rate * 100).toFixed(1);
+  const sortedSubstitutions = [...tag_substitution_patterns].sort((a, b) => b.count - a.count);
 
   return (
     <div className="space-y-6">
@@ -636,6 +638,47 @@ function MetricsView({ setApiStatus }) {
             </tbody>
           </table>
         </div>
+      </div>
+
+      {/* Tag Substitution Patterns */}
+      <div className="bg-white border border-slate-200 rounded-2xl p-5 space-y-4 shadow-sm">
+        <div>
+          <h3 className="text-sm font-bold text-slate-900">Tag Substitution Patterns</h3>
+          <p className="text-xs text-slate-500 font-mono mt-0.5">Recurring 1-to-1 tag replacements from reviewer corrections</p>
+        </div>
+
+        {sortedSubstitutions.length === 0 ? (
+          <p className="text-xs text-slate-400 font-mono italic">No recurring corrections yet.</p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-xs border-collapse">
+              <thead>
+                <tr className="border-b border-slate-200 text-slate-500 font-mono uppercase tracking-wider font-semibold">
+                  <th className="py-3 px-4">Model Suggested</th>
+                  <th className="py-3 px-4">User Corrected To</th>
+                  <th className="py-3 px-4 text-right">Times</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100 text-slate-700">
+                {sortedSubstitutions.map((pat, idx) => (
+                  <tr key={`${pat.from_tag}-${pat.to_tag}-${idx}`} className="hover:bg-slate-50 transition-colors">
+                    <td className="py-3 px-4 font-mono font-semibold text-rose-700">
+                      <span className="inline-flex items-center space-x-1 px-2.5 py-1 bg-rose-50 border border-rose-200 rounded-lg">
+                        <span>- {pat.from_tag}</span>
+                      </span>
+                    </td>
+                    <td className="py-3 px-4 font-mono font-semibold text-indigo-700">
+                      <span className="inline-flex items-center space-x-1 px-2.5 py-1 bg-indigo-50 border border-indigo-200 rounded-lg">
+                        <span>+ {pat.to_tag}</span>
+                      </span>
+                    </td>
+                    <td className="py-3 px-4 text-right font-mono font-bold text-slate-900">{pat.count}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
 
       {/* Daily Performance Trend (Over Time) */}
